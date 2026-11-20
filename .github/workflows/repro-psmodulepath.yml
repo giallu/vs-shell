@@ -1,0 +1,59 @@
+# Repro: after egor-tensin/vs-shell, Windows PowerShell steps load
+# PowerShell 7's modules, and Expand-Archive fails.
+#
+# The action writes its pwsh process's whole environment to GITHUB_ENV,
+# including PSModulePath, which pwsh rewrites to put its own module
+# directories first. Microsoft.PowerShell.Archive 1.2.7, bundled with
+# PowerShell 7.6.10, calls a .NET Core-only overload of ExtractToDirectory,
+# so in Windows PowerShell (.NET Framework) it fails.
+#
+# Expected: the "without vs-shell" jobs pass, the "with vs-shell" jobs fail
+# at "Expand-Archive in Windows PowerShell".
+
+name: Repro PSModulePath leak
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  repro:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+        vs_shell: [false, true]
+    name: ${{ matrix.os }} / ${{ matrix.vs_shell && 'with vs-shell' || 'without vs-shell' }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: PowerShell 7 and its Archive module
+        shell: pwsh
+        run: |
+          echo "pwsh $($PSVersionTable.PSVersion)"
+          $m = Get-Module -ListAvailable Microsoft.PowerShell.Archive | Select-Object -First 1
+          echo "pwsh's Microsoft.PowerShell.Archive: $($m.Version) in $($m.ModuleBase)"
+
+      - name: Set up Visual Studio shell
+        if: matrix.vs_shell
+        uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
+
+      - name: Module path seen by Windows PowerShell
+        shell: powershell
+        run: |
+          echo "PSModulePath:"
+          $env:PSModulePath -split ';' | %{ echo "  $_" }
+          $m = (Get-Command Expand-Archive).Module
+          echo "Expand-Archive comes from Microsoft.PowerShell.Archive $($m.Version) in $($m.ModuleBase)"
+
+      - name: Expand-Archive in Windows PowerShell
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory in | Out-Null
+          Set-Content in/hello.txt 'hello'
+          Compress-Archive -Path in/hello.txt -DestinationPath test.zip
+          Expand-Archive test.zip -DestinationPath out
+          Get-Content out/hello.txt
